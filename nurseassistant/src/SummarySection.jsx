@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Box, Typography, TextField, Button, CircularProgress, Paper, Tooltip, Switch, FormControlLabel, Alert } from '@mui/material';
 import { SummaryHistoryViewer } from './SummaryHistoryViewer';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import './SummaryHighlight.css';
 
 const API_BASE = "http://localhost:8002";
@@ -139,7 +140,7 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                 />
             ) : (
                 <Box sx={{ mb: 2 }}>
-                    <Typography variant="body1" style={{ whiteSpace: 'pre-line' }}>{displayContent}</Typography>
+                    <MarkdownRenderer>{displayContent}</MarkdownRenderer>
                 </Box>
             )}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

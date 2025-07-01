@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Box, Typography, Alert, Paper } from '@mui/material';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 export function TestSummaryHighlight({ patientId }) {
     const [currentSummary, setCurrentSummary] = useState(null);
@@ -40,7 +41,7 @@ export function TestSummaryHighlight({ patientId }) {
                 </Paper>
             ) : (
                 <Paper sx={{ p: 2, mt: 1 }}>
-                    <Typography variant="body1" style={{ whiteSpace: 'pre-line' }}>{currentSummary || 'No summary available.'}</Typography>
+                    <MarkdownRenderer>{currentSummary || 'No summary available.'}</MarkdownRenderer>
                 </Paper>
             )}
         </Box>

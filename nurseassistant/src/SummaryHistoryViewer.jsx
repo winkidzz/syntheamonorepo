@@ -4,6 +4,7 @@ import {
     Dialog, DialogTitle, DialogContent, DialogActions, Button, 
     List, ListItem, ListItemText, Typography, CircularProgress, Divider 
 } from '@mui/material';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 const API_BASE = "http://localhost:8002";
 
@@ -38,9 +39,9 @@ export function SummaryHistoryViewer({ open, onClose, patientId, summaryType, ti
                                                 <Typography component="span" variant="body2" color="text.primary">
                                                     {new Date(item.created_at).toLocaleString()}
                                                 </Typography>
-                                                <Typography component="p" variant="body2" sx={{whiteSpace: 'pre-wrap', mt: 1}}>
+                                                <MarkdownRenderer sx={{ mt: 1 }}>
                                                     {item.content}
-                                                </Typography>
+                                                </MarkdownRenderer>
                                             </>
                                         }
                                     />
