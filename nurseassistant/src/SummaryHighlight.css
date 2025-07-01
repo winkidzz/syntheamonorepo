@@ -1,0 +1,38 @@
+.summary-content {
+    line-height: 1.6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.highlight-new {
+    background-color: #fff3cd;
+    padding: 2px 4px;
+    border-radius: 3px;
+    border: 1px solid #ffeaa7;
+    color: #856404;
+    font-weight: 500;
+    position: relative;
+}
+
+.highlight-new::before {
+    content: "NEW";
+    position: absolute;
+    top: -20px;
+    left: 0;
+    font-size: 10px;
+    color: #dc3545;
+    font-weight: bold;
+    background: #fff;
+    padding: 1px 4px;
+    border-radius: 2px;
+    border: 1px solid #dc3545;
+}
+
+.summary-section {
+    margin-bottom: 1rem;
+}
+
+.summary-version-info {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-bottom: 0.5rem;
+} 
