@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Box, Typography, TextField, Button, CircularProgress, Paper, Tooltip, Switch, FormControlLabel, Alert, Grid, Tabs, Tab } from '@mui/material';
+import { Box, Typography, TextField, Button, CircularProgress, Paper, Tooltip, Switch, FormControlLabel, Alert, Grid, Tabs, Tab, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
 import { SummaryHistoryViewer } from './SummaryHistoryViewer';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import './SummaryHighlight.css';
@@ -21,11 +21,41 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
     const [hasPrevious, setHasPrevious] = useState(false);
     const [editViewMode, setEditViewMode] = useState(0); // 0: Edit, 1: Preview, 2: Split
 
+    // --- LLM Model Selection ---
+    const [availableModels, setAvailableModels] = useState({});
+    const [selectedModel, setSelectedModel] = useState('gemma3:27b');
+    const [isLoadingModels, setIsLoadingModels] = useState(false);
+
     // --- TIFF Fax Upload Section ---
     const [faxFile, setFaxFile] = useState(null);
     const [faxUploadLoading, setFaxUploadLoading] = useState(false);
     const [faxUploadError, setFaxUploadError] = useState("");
     const [faxParsedDetails, setFaxParsedDetails] = useState("");
+
+    // Load available models on component mount
+    useEffect(() => {
+        const loadModels = async () => {
+            setIsLoadingModels(true);
+            try {
+                const response = await axios.get(`${API_BASE}/models`);
+                setAvailableModels(response.data.models);
+                setSelectedModel(response.data.default_model);
+            } catch (error) {
+                console.error('Failed to load models:', error);
+                // Fallback to default models
+                setAvailableModels({
+                    'gemma3:27b': { name: 'Gemma 3 27B', type: 'ollama', description: 'Google\'s Gemma 3 27B model via Ollama' },
+                    'llava:latest': { name: 'LLaVA Latest', type: 'ollama', description: 'LLaVA vision model via Ollama' },
+                    'mistral:latest': { name: 'Mistral Latest', type: 'ollama', description: 'Mistral AI model via Ollama' },
+                    'llama3:8b': { name: 'Llama 3 8B', type: 'ollama', description: 'Meta\'s Llama 3 8B model via Ollama' },
+                    'gemini-pro': { name: 'Gemini Pro', type: 'google', description: 'Google\'s Gemini Pro model via API' }
+                });
+            } finally {
+                setIsLoadingModels(false);
+            }
+        };
+        loadModels();
+    }, []);
 
     const handleFaxFileChange = (e) => {
         setFaxFile(e.target.files[0]);
@@ -84,7 +114,10 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
 
     const handleGenerate = () => {
         setIsGenerating(true);
-        axios.post(`${API_BASE}/patients/${patientId}/summarize`, { type: summaryType })
+        axios.post(`${API_BASE}/patients/${patientId}/summarize`, { 
+            summary_type: summaryType, 
+            model: selectedModel 
+        })
             .then(res => {
                 setContent(res.data.summary);
                 if (res.data.highlighted_html) {
@@ -95,6 +128,30 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                 setEditViewMode(1); // Show preview first after generation
             })
             .finally(() => setIsGenerating(false));
+    };
+
+    const handleEdit = () => {
+        // Store current content as original before making changes
+        const currentContent = content || displayContent || '';
+        setOriginalContent(currentContent);
+        
+        // For current summary, start with the latest generated content or existing content
+        if (summaryType === 'current') {
+            if (latestGenerated) {
+                setContent(latestGenerated);
+            } else if (initialContent) {
+                setContent(initialContent);
+            } else {
+                setContent(''); // Start with empty content for new current summary
+            }
+        } else {
+            // For historical summary, start with existing content
+            setContent(initialContent || '');
+        }
+        
+        setIsEditing(true);
+        setEditViewMode(0); // Start in edit mode
+        setShowHighlighted(false); // Hide highlights when editing
     };
 
     const handleSave = () => {
@@ -307,7 +364,31 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                 )}
             </Box>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <FormControl size="small" sx={{ minWidth: 200 }}>
+                        <InputLabel id="model-select-label">LLM Model</InputLabel>
+                        <Select
+                            labelId="model-select-label"
+                            value={selectedModel}
+                            label="LLM Model"
+                            onChange={(e) => setSelectedModel(e.target.value)}
+                            disabled={isGenerating || isSaving || isLoadingModels}
+                        >
+                            {Object.entries(availableModels).map(([modelId, modelInfo]) => (
+                                <MenuItem key={modelId} value={modelId}>
+                                    <Box>
+                                        <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                                            {modelInfo.name}
+                                        </Typography>
+                                        <Typography variant="caption" color="textSecondary">
+                                            {modelInfo.type === 'google' ? 'Google API' : 'Ollama'} • {modelInfo.description}
+                                        </Typography>
+                                    </Box>
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                    
                     <Tooltip title={promptHelpText || "Summarizes the entire patient record."}>
                         <Button
                             variant="contained"
@@ -318,6 +399,15 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                             {isGenerating ? <CircularProgress size={24} /> : 'Generate'}
                         </Button>
                     </Tooltip>
+                    {!isEditing && (displayContent || summaryType === 'current') && (
+                        <Button
+                            variant="outlined"
+                            onClick={handleEdit}
+                            disabled={isGenerating || isSaving}
+                        >
+                            Edit
+                        </Button>
+                    )}
                     <Button
                         variant="outlined"
                         onClick={() => setHistoryOpen(true)}

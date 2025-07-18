@@ -23,14 +23,54 @@ import io
 import requests
 import logging
 
-# --- Configuration ---
-# LLM Configuration for reproducible and accurate clinical summaries
+# --- Enhanced Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('ehrsimulator.log')
+    ]
+)
+logger = logging.getLogger("ehrsimulator")
+llm_logger = logging.getLogger("ehrsimulator.llm")
+
+# --- LLM Configuration ---
 LLM_CONFIG = {
     "temperature": 0.0,      # Set to 0 for maximum reproducibility and accuracy
     "top_p": 1.0,           # Use deterministic sampling
     "repeat_penalty": 1.1,   # Slight penalty to avoid repetition
     "top_k": 1,             # Most deterministic setting
     "timeout": 120.0        # Extended timeout for complex clinical prompts
+}
+
+# Available LLM Models
+AVAILABLE_MODELS = {
+    "gemma3:27b": {
+        "name": "Gemma 3 27B",
+        "type": "ollama",
+        "description": "Google's Gemma 3 27B model via Ollama"
+    },
+    "llava:latest": {
+        "name": "LLaVA Latest",
+        "type": "ollama", 
+        "description": "LLaVA vision model via Ollama"
+    },
+    "mistral:latest": {
+        "name": "Mistral Latest",
+        "type": "ollama",
+        "description": "Mistral AI model via Ollama"
+    },
+    "llama3:8b": {
+        "name": "Llama 3 8B",
+        "type": "ollama",
+        "description": "Meta's Llama 3 8B model via Ollama"
+    },
+    "gemini-pro": {
+        "name": "Gemini Pro",
+        "type": "google",
+        "description": "Google's Gemini Pro model via API"
+    }
 }
 
 # Clinical significance thresholds
@@ -503,13 +543,22 @@ def get_fhir_stats(fhir_bundle: dict, last_n: Optional[int] = None) -> str:
     return "\n".join(formatted_data)
 
 
-async def call_ollama_llm(prompt_text: str, summary_type: str, previous_summary: str = None) -> str:
+async def call_ollama_llm(prompt_text: str, summary_type: str, previous_summary: str = None, model: str = "gemma3:27b") -> str:
     """
     Calls a remote Ollama LLM to generate a summary with temperature=0 for reproducibility.
     For current summaries, performs sophisticated incremental updates that preserve
     previous recommendations unless new data requires major reevaluation.
     """
+    start_time = datetime.now()
+    llm_logger.info(f"=== LLM CALL STARTED ===")
+    llm_logger.info(f"Summary Type: {summary_type}")
+    llm_logger.info(f"Prompt Length: {len(prompt_text)} characters")
+    llm_logger.info(f"Has Previous Summary: {previous_summary is not None}")
+    if previous_summary:
+        llm_logger.info(f"Previous Summary Length: {len(previous_summary)} characters")
+    
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
+    llm_logger.info(f"Ollama URL: {OLLAMA_URL}")
     
     if summary_type == 'historical':
         system_prompt = """You are a senior clinical assistant with extensive experience in patient care documentation. 
@@ -518,11 +567,14 @@ Focus on significant medical conditions, treatment patterns, and overall health 
 Use clear, professional medical language appropriate for clinical documentation."""
         
         full_prompt = f"{system_prompt}\n\nPatient Data: {prompt_text}"
+        llm_logger.info("Using HISTORICAL summary prompt")
         
     else: # 'current' - sophisticated incremental update
         if previous_summary:
             # Assess clinical significance of changes
+            llm_logger.info("Assessing clinical significance for incremental update")
             clinical_assessment = assess_clinical_significance(previous_summary, prompt_text)
+            llm_logger.info(f"Clinical assessment completed, length: {len(clinical_assessment)} characters")
             
             system_prompt = """You are a senior clinical assistant performing an incremental update to a patient summary. 
 
@@ -565,6 +617,7 @@ INSTRUCTIONS FOR UPDATE:
 8. If modifications are made, ensure they are evidence-based and clinically appropriate
 
 Provide the complete updated clinical summary:"""
+            llm_logger.info("Using INCREMENTAL UPDATE prompt with previous summary")
         
         else:
             system_prompt = """You are a senior clinical assistant creating an initial current summary for a patient. 
@@ -572,9 +625,10 @@ Analyze the recent patient activity data and create a comprehensive current stat
 Focus on current conditions, recent interventions, and immediate care needs."""
             
             full_prompt = f"{system_prompt}\n\nRecent Patient Data: {prompt_text}"
+            llm_logger.info("Using INITIAL CURRENT summary prompt (no previous summary)")
 
     payload = {
-        "model": "gemma3:27b",
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt_text}
@@ -588,14 +642,259 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         }
     }
 
+    llm_logger.info(f"Model: {payload['model']}")
+    llm_logger.info(f"LLM Config: temperature={LLM_CONFIG['temperature']}, top_p={LLM_CONFIG['top_p']}, repeat_penalty={LLM_CONFIG['repeat_penalty']}, top_k={LLM_CONFIG['top_k']}")
+    llm_logger.info(f"System prompt length: {len(system_prompt)} characters")
+    llm_logger.info(f"User prompt length: {len(prompt_text)} characters")
+    llm_logger.info(f"Total payload size: {len(json.dumps(payload))} characters")
+
     try:
+        llm_logger.info(f"Sending request to Ollama at {OLLAMA_URL}")
+        request_start = datetime.now()
+        
         async with httpx.AsyncClient(timeout=LLM_CONFIG["timeout"]) as client:
             response = await client.post(OLLAMA_URL, json=payload)
+            request_end = datetime.now()
+            request_duration = (request_end - request_start).total_seconds()
+            
+            llm_logger.info(f"Request completed in {request_duration:.2f} seconds")
+            llm_logger.info(f"Response status: {response.status_code}")
+            
             response.raise_for_status()
             result = response.json()
-            return result.get("choices", [{}])[0].get("message", {}).get("content", "Error: No response from model.")
-    except (httpx.RequestError, httpx.HTTPStatusError) as e:
-        return f"Error: Could not connect to Ollama. Make sure Ollama is running and the model is available. Details: {e}"
+            
+            llm_logger.info(f"Response received, parsing JSON")
+            response_content = result.get("choices", [{}])[0].get("message", {}).get("content", "Error: No response from model.")
+            
+            end_time = datetime.now()
+            total_duration = (end_time - start_time).total_seconds()
+            
+            llm_logger.info(f"=== LLM CALL COMPLETED SUCCESSFULLY ===")
+            llm_logger.info(f"Total duration: {total_duration:.2f} seconds")
+            llm_logger.info(f"Response length: {len(response_content)} characters")
+            llm_logger.info(f"Response preview: {response_content[:200]}...")
+            
+            return response_content
+            
+    except httpx.RequestError as e:
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+        error_msg = f"Request error: Could not connect to Ollama. Make sure Ollama is running and the model is available. Details: {e}"
+        llm_logger.error(f"=== LLM CALL FAILED (REQUEST ERROR) ===")
+        llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
+        llm_logger.error(f"Error: {error_msg}")
+        return error_msg
+        
+    except httpx.HTTPStatusError as e:
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+        error_msg = f"HTTP error: {e.response.status_code} - {e.response.text}"
+        llm_logger.error(f"=== LLM CALL FAILED (HTTP ERROR) ===")
+        llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
+        llm_logger.error(f"HTTP Status: {e.response.status_code}")
+        llm_logger.error(f"Error response: {e.response.text}")
+        return error_msg
+        
+    except Exception as e:
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+        error_msg = f"Unexpected error: {str(e)}"
+        llm_logger.error(f"=== LLM CALL FAILED (UNEXPECTED ERROR) ===")
+        llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
+        llm_logger.error(f"Error: {error_msg}")
+        return error_msg
+
+
+async def call_gemini_pro(prompt_text: str, summary_type: str, previous_summary: str = None) -> str:
+    """
+    Calls Google's Gemini Pro API to generate a summary.
+    """
+    start_time = datetime.now()
+    llm_logger.info(f"=== GEMINI PRO CALL STARTED ===")
+    llm_logger.info(f"Summary Type: {summary_type}")
+    llm_logger.info(f"Prompt Length: {len(prompt_text)} characters")
+    llm_logger.info(f"Has Previous Summary: {previous_summary is not None}")
+    
+    GEMINI_API_KEY = os.getenv("GENERATESUMMARY_APIKEY")
+    if not GEMINI_API_KEY:
+        error_msg = "Gemini Pro API key not found. Please set GENERATESUMMARY_APIKEY environment variable."
+        llm_logger.error(f"=== GEMINI PRO CALL FAILED ===")
+        llm_logger.error(f"Error: {error_msg}")
+        return error_msg
+    
+    GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    
+    if summary_type == 'historical':
+        system_prompt = """You are a senior clinical assistant with extensive experience in patient care documentation. 
+Analyze the following patient record statistics and create a comprehensive historical overview for a clinician. 
+Focus on significant medical conditions, treatment patterns, and overall health trajectory. 
+Use clear, professional medical language appropriate for clinical documentation."""
+        
+        full_prompt = f"{system_prompt}\n\nPatient Data: {prompt_text}"
+        llm_logger.info("Using HISTORICAL summary prompt")
+        
+    else: # 'current' - sophisticated incremental update
+        if previous_summary:
+            # Assess clinical significance of changes
+            llm_logger.info("Assessing clinical significance for incremental update")
+            clinical_assessment = assess_clinical_significance(previous_summary, prompt_text)
+            llm_logger.info(f"Clinical assessment completed, length: {len(clinical_assessment)} characters")
+            
+            system_prompt = """You are a senior clinical assistant performing an incremental update to a patient summary. 
+
+CRITICAL INSTRUCTIONS:
+1. PRESERVE CONTINUITY: Maintain all existing clinical assessments, recommendations, and care plans unless the new data provides clear evidence requiring changes.
+2. INCREMENTAL APPROACH: Only add new information or modify existing information when clinically significant changes are present.
+3. EVIDENCE-BASED CHANGES: Only alter previous recommendations if new data shows:
+   - Significant improvement or deterioration in patient condition
+   - New diagnostic findings that change the clinical picture
+   - Treatment responses that warrant care plan modifications
+4. MAINTAIN PROFESSIONAL TONE: Use consistent clinical language and formatting.
+5. HIGHLIGHT UPDATES: Clearly indicate what is new or changed while preserving the overall summary structure.
+
+PROCESS:
+- Review the previous summary thoroughly
+- Analyze new patient data for clinically significant changes
+- Consider the clinical significance assessment provided
+- Preserve all stable clinical information and ongoing care plans
+- Add new findings and updates where appropriate
+- Only modify recommendations when clinically justified by new evidence"""
+
+            full_prompt = f"""{system_prompt}
+
+PREVIOUS CLINICAL SUMMARY:
+{previous_summary}
+
+NEW PATIENT DATA TO INTEGRATE:
+{prompt_text}
+
+{clinical_assessment}
+
+INSTRUCTIONS FOR UPDATE:
+1. Start with the existing summary as your foundation
+2. Review the clinical significance assessment above to guide your approach
+3. Preserve all stable conditions, ongoing treatments, and current care plans
+4. Add new findings, observations, or changes in patient status
+5. Only modify existing recommendations if the clinical significance assessment and new data provide clear justification
+6. Maintain the professional clinical documentation format
+7. Ensure the updated summary flows naturally and provides a complete current picture
+8. If modifications are made, ensure they are evidence-based and clinically appropriate
+
+Provide the complete updated clinical summary:"""
+            llm_logger.info("Using INCREMENTAL UPDATE prompt with previous summary")
+        
+        else:
+            system_prompt = """You are a senior clinical assistant creating an initial current summary for a patient. 
+Analyze the recent patient activity data and create a comprehensive current status summary for the clinical team. 
+Focus on current conditions, recent interventions, and immediate care needs."""
+            
+            full_prompt = f"{system_prompt}\n\nRecent Patient Data: {prompt_text}"
+            llm_logger.info("Using INITIAL CURRENT summary prompt (no previous summary)")
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": full_prompt}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": LLM_CONFIG["temperature"],
+            "topP": LLM_CONFIG["top_p"],
+            "topK": LLM_CONFIG["top_k"],
+            "maxOutputTokens": 8192
+        }
+    }
+
+    llm_logger.info(f"Model: Gemini Pro")
+    llm_logger.info(f"LLM Config: temperature={LLM_CONFIG['temperature']}, top_p={LLM_CONFIG['top_p']}, top_k={LLM_CONFIG['top_k']}")
+    llm_logger.info(f"Full prompt length: {len(full_prompt)} characters")
+    llm_logger.info(f"Total payload size: {len(json.dumps(payload))} characters")
+
+    try:
+        llm_logger.info(f"Sending request to Gemini Pro API")
+        request_start = datetime.now()
+        
+        async with httpx.AsyncClient(timeout=LLM_CONFIG["timeout"]) as client:
+            response = await client.post(
+                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            request_end = datetime.now()
+            request_duration = (request_end - request_start).total_seconds()
+            
+            llm_logger.info(f"Request completed in {request_duration:.2f} seconds")
+            llm_logger.info(f"Response status: {response.status_code}")
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            llm_logger.info(f"Response received, parsing JSON")
+            
+            # Extract text from Gemini response
+            if "candidates" in result and len(result["candidates"]) > 0:
+                response_content = result["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                response_content = "Error: No response content from Gemini Pro"
+            
+            end_time = datetime.now()
+            total_duration = (end_time - start_time).total_seconds()
+            
+            llm_logger.info(f"=== GEMINI PRO CALL COMPLETED SUCCESSFULLY ===")
+            llm_logger.info(f"Total duration: {total_duration:.2f} seconds")
+            llm_logger.info(f"Response length: {len(response_content)} characters")
+            llm_logger.info(f"Response preview: {response_content[:200]}...")
+            
+            return response_content
+            
+    except httpx.RequestError as e:
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+        error_msg = f"Request error: Could not connect to Gemini Pro API. Details: {e}"
+        llm_logger.error(f"=== GEMINI PRO CALL FAILED (REQUEST ERROR) ===")
+        llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
+        llm_logger.error(f"Error: {error_msg}")
+        return error_msg
+        
+    except httpx.HTTPStatusError as e:
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+        error_msg = f"HTTP error: {e.response.status_code} - {e.response.text}"
+        llm_logger.error(f"=== GEMINI PRO CALL FAILED (HTTP ERROR) ===")
+        llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
+        llm_logger.error(f"HTTP Status: {e.response.status_code}")
+        llm_logger.error(f"Error response: {e.response.text}")
+        return error_msg
+        
+    except Exception as e:
+        end_time = datetime.now()
+        total_duration = (end_time - start_time).total_seconds()
+        error_msg = f"Unexpected error: {str(e)}"
+        llm_logger.error(f"=== GEMINI PRO CALL FAILED (UNEXPECTED ERROR) ===")
+        llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
+        llm_logger.error(f"Error: {error_msg}")
+        return error_msg
+
+
+async def call_llm(prompt_text: str, summary_type: str, previous_summary: str = None, model: str = "gemma3:27b") -> str:
+    """
+    Main LLM calling function that routes to appropriate model based on type.
+    """
+    if model not in AVAILABLE_MODELS:
+        error_msg = f"Model '{model}' not found in available models: {list(AVAILABLE_MODELS.keys())}"
+        llm_logger.error(f"=== LLM CALL FAILED (INVALID MODEL) ===")
+        llm_logger.error(f"Error: {error_msg}")
+        return error_msg
+    
+    model_info = AVAILABLE_MODELS[model]
+    llm_logger.info(f"Selected model: {model} ({model_info['name']}) - Type: {model_info['type']}")
+    
+    if model_info['type'] == 'google':
+        return await call_gemini_pro(prompt_text, summary_type, previous_summary)
+    else:  # ollama
+        return await call_ollama_llm(prompt_text, summary_type, previous_summary, model)
 
 
 def highlight_changes(old_text: str, new_text: str) -> str:
@@ -633,24 +932,74 @@ def highlight_changes(old_text: str, new_text: str) -> str:
     return f'<div class="summary-content">{" ".join(highlighted_content)}</div>'
 
 
+@app.get("/models")
+async def get_available_models():
+    """
+    Returns list of available LLM models for the frontend dropdown.
+    """
+    logger.info("=== GET AVAILABLE MODELS REQUEST ===")
+    
+    # Check which Ollama models are actually available
+    available_ollama_models = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("http://localhost:11434/api/tags")
+            if response.status_code == 200:
+                result = response.json()
+                installed_models = {model["name"]: model for model in result.get("models", [])}
+                
+                # Filter our available models to only include installed ones
+                for model_id, model_info in AVAILABLE_MODELS.items():
+                    if model_info["type"] == "ollama":
+                        if model_id in installed_models:
+                            available_ollama_models[model_id] = model_info
+                        else:
+                            logger.warning(f"Ollama model {model_id} not found in installed models")
+                    else:  # google models
+                        available_ollama_models[model_id] = model_info
+                        
+                logger.info(f"Found {len(available_ollama_models)} available models")
+            else:
+                logger.warning("Could not connect to Ollama, returning all configured models")
+                available_ollama_models = AVAILABLE_MODELS
+    except Exception as e:
+        logger.warning(f"Error checking Ollama models: {e}, returning all configured models")
+        available_ollama_models = AVAILABLE_MODELS
+    
+    return {
+        "models": available_ollama_models,
+        "default_model": "gemma3:27b"
+    }
+
+
 @app.post("/patients/{patient_id}/summarize")
 async def summarize_patient_data(patient_id: int, request: Request):
     """
-    Generates a new summary from patient data using a stubbed LLM.
+    Generates a new summary from patient data using the specified LLM model.
     For 'current' type, this creates an incremental update based on previous summary.
     Does NOT save the summary.
     """
+    logger.info(f"=== SUMMARIZE REQUEST STARTED ===")
+    logger.info(f"Patient ID: {patient_id}")
+    
     body = await request.json()
     summary_type = body.get("summary_type", "historical") # 'historical' or 'current'
+    model = body.get("model", "gemma3:27b")  # Default to gemma3:27b
+    logger.info(f"Summary Type: {summary_type}")
+    logger.info(f"Selected Model: {model}")
 
     async with async_session() as session:
         patient = await session.get(Patient, patient_id)
         if not patient:
+            logger.error(f"Patient {patient_id} not found")
             raise HTTPException(status_code=404, detail="Patient not found")
+        
+        logger.info(f"Patient found: {patient.synthea_id}")
         
         # Get previous summary for incremental updates (current type only)
         previous_summary = None
         if summary_type == 'current':
+            logger.info("Fetching previous summary for incremental update")
             result = await session.execute(
                 select(PatientSummary)
                 .where(PatientSummary.patient_id == patient_id)
@@ -660,23 +1009,34 @@ async def summarize_patient_data(patient_id: int, request: Request):
             previous = result.scalar_one_or_none()
             if previous:
                 previous_summary = previous.content
+                logger.info(f"Previous summary found, version: {previous.version}")
+            else:
+                logger.info("No previous summary found, will create initial current summary")
         
         if summary_type == 'current':
             stats = get_fhir_stats(patient.data, last_n=10)
+            logger.info(f"Generated current stats (last 10 events), length: {len(stats)} characters")
         else:
             stats = get_fhir_stats(patient.data)
+            logger.info(f"Generated historical stats, length: {len(stats)} characters")
             
-        summary_text = await call_ollama_llm(stats, summary_type, previous_summary)
+        logger.info(f"Initiating LLM call for summary generation with model: {model}")
+        summary_text = await call_llm(stats, summary_type, previous_summary, model)
         
         # Generate highlighted version for current summaries
         highlighted_html = None
         if summary_type == 'current':
+            logger.info("Generating highlighted HTML for current summary")
             highlighted_html = highlight_changes(previous_summary or "", summary_text)
+        
+        logger.info(f"=== SUMMARIZE REQUEST COMPLETED ===")
+        logger.info(f"Generated summary length: {len(summary_text)} characters")
         
         return {
             "summary": summary_text,
             "highlighted_html": highlighted_html,
-            "has_previous": previous_summary is not None
+            "has_previous": previous_summary is not None,
+            "model_used": model
         }
 
 @app.get("/patients/{patient_id}/summary/{summary_type}/history")
@@ -723,43 +1083,44 @@ async def get_patient_summary(patient_id: int):
 @app.post("/patients/{patient_id}/summary")
 async def save_patient_summary(patient_id: int, request: Request):
     """
-    Saves a new version of a patient summary.
+    Saves a patient summary to the database.
     """
+    logger.info(f"=== SAVE SUMMARY REQUEST STARTED ===")
+    logger.info(f"Patient ID: {patient_id}")
+    
     body = await request.json()
     summary_type = body.get("type")
-    content = body.get("content")
+    content = body.get("content", "")
     highlighted_html = body.get("highlighted_html")
-
-    if not summary_type or not content:
-        raise HTTPException(status_code=400, detail="Missing type or content")
+    
+    logger.info(f"Summary Type: {summary_type}")
+    logger.info(f"Content Length: {len(content)} characters")
+    logger.info(f"Has Highlighted HTML: {highlighted_html is not None}")
+    
+    if not content.strip():
+        logger.error("Empty content provided for summary")
+        raise HTTPException(status_code=400, detail="Summary content cannot be empty")
 
     async with async_session() as session:
-        # Find latest version and deactivate it
-        subquery = (
-            select(func.max(PatientSummary.version))
+        # Get the latest version for this patient and summary type
+        result = await session.execute(
+            select(PatientSummary)
             .where(PatientSummary.patient_id == patient_id)
             .where(PatientSummary.summary_type == summary_type)
-            .scalar_subquery()
+            .order_by(PatientSummary.version.desc())
         )
+        latest = result.scalar_one_or_none()
         
-        update_stmt = (
-            update(PatientSummary)
-            .where(PatientSummary.patient_id == patient_id)
-            .where(PatientSummary.summary_type == summary_type)
-            .where(PatientSummary.is_active == True)
-            .values(is_active=False)
-        )
-        await session.execute(update_stmt)
-
-        # Get the new version number
-        latest_version = await session.execute(
-            select(func.max(PatientSummary.version))
-            .where(PatientSummary.patient_id == patient_id)
-            .where(PatientSummary.summary_type == summary_type)
-        )
-        new_version = (latest_version.scalar() or 0) + 1
+        new_version = 1 if not latest else latest.version + 1
+        logger.info(f"Creating new version: {new_version}")
         
-        # Insert new summary
+        # Deactivate previous active summary
+        if latest and latest.is_active:
+            logger.info("Deactivating previous active summary")
+            latest.is_active = False
+            session.add(latest)
+        
+        # Create new summary
         new_summary = PatientSummary(
             patient_id=patient_id,
             summary_type=summary_type,
@@ -768,9 +1129,19 @@ async def save_patient_summary(patient_id: int, request: Request):
             is_active=True,
             changes_highlighted=highlighted_html
         )
+        
         session.add(new_summary)
         await session.commit()
-        return {"status": "success", "version": new_version}
+        await session.refresh(new_summary)
+        
+        logger.info(f"=== SAVE SUMMARY REQUEST COMPLETED ===")
+        logger.info(f"Summary saved with ID: {new_summary.id}, Version: {new_summary.version}")
+        
+        return {
+            "id": new_summary.id,
+            "version": new_summary.version,
+            "created_at": new_summary.created_at
+        }
 
 # --- REST Endpoint: Create/Simulate Patient ---
 @app.post("/admit-patient")
@@ -824,16 +1195,23 @@ async def upload_fax_tiff(patient_id: int, file: UploadFile = File(...)):
     """
     Accepts a TIFF file upload, sends it to Gemma 3 4B for parsing, and returns the result.
     """
+    logger.info(f"=== FAX UPLOAD REQUEST STARTED ===")
+    logger.info(f"Patient ID: {patient_id}")
+    logger.info(f"File: {file.filename}, Content-Type: {file.content_type}")
+    
     # Save uploaded file to a temp location
     suffix = ".tiff" if file.filename.lower().endswith(".tiff") else ".tif"
     async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()
         await tmp.write(content)
         tmp_path = tmp.name
+        logger.info(f"File saved to temp location: {tmp_path}")
+        logger.info(f"File size: {len(content)} bytes")
 
     # Encode file as base64 data URL
     encoded_string = base64.b64encode(content).decode("utf-8")
     data_url = f"data:image/tiff;base64,{encoded_string}"
+    logger.info(f"File encoded as base64, data URL length: {len(data_url)} characters")
 
     # Prepare payload for Ollama OpenAI-compatible endpoint
     payload = {
@@ -848,41 +1226,65 @@ async def upload_fax_tiff(patient_id: int, file: UploadFile = File(...)):
             }
         ]
     }
+    
+    logger.info(f"Prepared LLM payload for model: {payload['model']}")
+    logger.info(f"Payload size: {len(json.dumps(payload))} characters")
+    
     # Send to Ollama (OpenAI-compatible endpoint)
     OLLAMA_OPENAI_URL = os.getenv("OLLAMA_OPENAI_URL", "http://localhost:11434/v1/chat/completions")
+    logger.info(f"Sending request to Ollama at: {OLLAMA_OPENAI_URL}")
+    
     try:
+        request_start = datetime.now()
         async with httpx.AsyncClient(timeout=LLM_CONFIG["timeout"]) as client:
             response = await client.post(OLLAMA_OPENAI_URL, json=payload)
+            request_end = datetime.now()
+            request_duration = (request_end - request_start).total_seconds()
+            
+            logger.info(f"LLM request completed in {request_duration:.2f} seconds")
+            logger.info(f"Response status: {response.status_code}")
+            
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            
+            logger.info(f"=== FAX UPLOAD REQUEST COMPLETED SUCCESSFULLY ===")
+            logger.info(f"Response received and parsed successfully")
+            
+            return result
     except (httpx.RequestError, httpx.HTTPStatusError) as e:
-        return {"error": f"Could not connect to Ollama or model error: {e}"}
+        error_msg = f"Could not connect to Ollama or model error: {e}"
+        logger.error(f"=== FAX UPLOAD REQUEST FAILED ===")
+        logger.error(f"Error: {error_msg}")
+        return {"error": error_msg}
 
 @app.post("/upload-fax/")
 async def upload_fax(file: UploadFile = File(...)):
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger("fax-upload")
-    logger.info(f"Received file: {file.filename}, content_type: {file.content_type}")
+    logger.info(f"=== GENERAL FAX UPLOAD REQUEST STARTED ===")
+    logger.info(f"File: {file.filename}, Content-Type: {file.content_type}")
+    
     # Check file type
     if not file.filename.lower().endswith((".tif", ".tiff")):
-        logger.error("File is not a TIFF.")
+        logger.error("File is not a TIFF format")
         raise HTTPException(status_code=400, detail="Only TIFF files are supported.")
 
     # Read TIFF file
     tiff_bytes = await file.read()
+    logger.info(f"File read successfully, size: {len(tiff_bytes)} bytes")
+    
     try:
-        logger.info("Attempting to open TIFF image.")
+        logger.info("Converting TIFF to PNG format")
         tiff_image = Image.open(io.BytesIO(tiff_bytes))
         png_buffer = io.BytesIO()
         tiff_image.save(png_buffer, format="PNG")
         png_bytes = png_buffer.getvalue()
-        logger.info(f"TIFF to PNG conversion successful. PNG size: {len(png_bytes)} bytes.")
+        logger.info(f"TIFF to PNG conversion successful. PNG size: {len(png_bytes)} bytes")
     except Exception as e:
         logger.error(f"Image conversion failed: {str(e)}")
         return JSONResponse(status_code=500, content={"error": f"Image conversion failed: {str(e)}"})
 
     # Encode PNG as base64 for LLM API
     png_b64 = base64.b64encode(png_bytes).decode("utf-8")
+    logger.info(f"PNG encoded as base64, length: {len(png_b64)} characters")
 
     # Prepare payload for llava-llama3
     payload = {
@@ -893,20 +1295,33 @@ async def upload_fax(file: UploadFile = File(...)):
             ]}
         ]
     }
-    logger.info(f"Payload to be sent to Ollama: {payload}")
+    logger.info(f"Prepared LLM payload for model: {payload['model']}")
+    logger.info(f"Payload size: {len(json.dumps(payload))} characters")
+    
     # Call Ollama API
     try:
-        logger.info("Sending PNG to Ollama LLM API.")
+        logger.info("Sending PNG to Ollama LLM API")
+        request_start = datetime.now()
         response = requests.post("http://localhost:11434/v1/chat/completions", json=payload, timeout=60)
+        request_end = datetime.now()
+        request_duration = (request_end - request_start).total_seconds()
+        
+        logger.info(f"LLM request completed in {request_duration:.2f} seconds")
+        logger.info(f"Response status: {response.status_code}")
+        
         response.raise_for_status()
         result = response.json()
-        logger.info(f"Ollama API response: {result}")
+        logger.info(f"Response received and parsed successfully")
+        
         details = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        logger.info(f"=== GENERAL FAX UPLOAD REQUEST COMPLETED SUCCESSFULLY ===")
+        logger.info(f"Generated response length: {len(details)} characters")
+        
+        return JSONResponse(content={"details": details})
     except Exception as e:
+        logger.error(f"=== GENERAL FAX UPLOAD REQUEST FAILED ===")
         logger.error(f"LLM API call failed: {str(e)}")
         return JSONResponse(status_code=500, content={"error": f"LLM API call failed: {str(e)}"})
-
-    return JSONResponse(content={"details": details})
 
 # --- DB Init Utility ---
 @app.on_event("startup")
