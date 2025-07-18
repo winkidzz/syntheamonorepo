@@ -5,7 +5,7 @@ A comprehensive healthcare simulation platform consisting of three integrated pr
 ## 🏗️ Monorepo Structure
 
 ```
-syntheaspringboot/
+syntheamonorepo/
 ├── synthea/                    # Java Spring Boot - Patient Data Generator
 ├── ehrsimulator/              # Python FastAPI - EHR Simulator with AI
 ├── nurseassistant/            # React Frontend - Clinical UI
