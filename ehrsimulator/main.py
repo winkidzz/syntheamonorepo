@@ -22,6 +22,19 @@ from PIL import Image
 import io
 import requests
 import logging
+import time
+
+# Import OpenTelemetry configuration
+from telemetry import (
+    setup_telemetry, 
+    instrument_fastapi, 
+    instrument_httpx, 
+    instrument_sqlalchemy, 
+    instrument_logging,
+    log_llm_request,
+    log_api_request,
+    log_database_operation
+)
 
 # --- Enhanced Logging Configuration ---
 logging.basicConfig(
@@ -557,6 +570,10 @@ async def call_ollama_llm(prompt_text: str, summary_type: str, previous_summary:
     if previous_summary:
         llm_logger.info(f"Previous Summary Length: {len(previous_summary)} characters")
     
+    # Get tracer for OpenTelemetry
+    from opentelemetry import trace
+    tracer = trace.get_tracer(__name__)
+    
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
     llm_logger.info(f"Ollama URL: {OLLAMA_URL}")
     
@@ -569,7 +586,7 @@ Use clear, professional medical language appropriate for clinical documentation.
         full_prompt = f"{system_prompt}\n\nPatient Data: {prompt_text}"
         llm_logger.info("Using HISTORICAL summary prompt")
         
-    else: # 'current' - sophisticated incremental update
+    else: # 'current' - sophisticated incremental update with change tracking
         if previous_summary:
             # Assess clinical significance of changes
             llm_logger.info("Assessing clinical significance for incremental update")
@@ -578,7 +595,7 @@ Use clear, professional medical language appropriate for clinical documentation.
             
             system_prompt = """You are a senior clinical assistant performing an incremental update to a patient summary. 
 
-CRITICAL INSTRUCTIONS:
+CRITICAL INSTRUCTIONS FOR INCREMENTAL UPDATES:
 1. PRESERVE CONTINUITY: Maintain all existing clinical assessments, recommendations, and care plans unless the new data provides clear evidence requiring changes.
 2. INCREMENTAL APPROACH: Only add new information or modify existing information when clinically significant changes are present.
 3. EVIDENCE-BASED CHANGES: Only alter previous recommendations if new data shows:
@@ -586,15 +603,25 @@ CRITICAL INSTRUCTIONS:
    - New diagnostic findings that change the clinical picture
    - Treatment responses that warrant care plan modifications
 4. MAINTAIN PROFESSIONAL TONE: Use consistent clinical language and formatting.
-5. HIGHLIGHT UPDATES: Clearly indicate what is new or changed while preserving the overall summary structure.
+5. CHANGE TRACKING: Use markdown formatting to clearly indicate changes:
+   - ~~deleted text~~ for content that should be removed (strikethrough)
+   - **new text** for content that should be added (bold)
+   - If no changes are needed, return the exact same summary
 
 PROCESS:
 - Review the previous summary thoroughly
 - Analyze new patient data for clinically significant changes
 - Consider the clinical significance assessment provided
 - Preserve all stable clinical information and ongoing care plans
-- Add new findings and updates where appropriate
-- Only modify recommendations when clinically justified by new evidence"""
+- Add new findings, observations, or changes in patient status
+- Only modify recommendations when clinically justified by new evidence
+- Use markdown formatting to show what should be deleted and what should be added
+
+OUTPUT FORMAT:
+Provide the complete updated clinical summary with markdown formatting:
+- Use ~~text~~ for content to be deleted
+- Use **text** for content to be added
+- If no changes needed, return the exact same summary without markdown"""
 
             full_prompt = f"""{system_prompt}
 
@@ -615,9 +642,10 @@ INSTRUCTIONS FOR UPDATE:
 6. Maintain the professional clinical documentation format
 7. Ensure the updated summary flows naturally and provides a complete current picture
 8. If modifications are made, ensure they are evidence-based and clinically appropriate
+9. Use markdown formatting to show deletions (~~text~~) and additions (**text**)
 
-Provide the complete updated clinical summary:"""
-            llm_logger.info("Using INCREMENTAL UPDATE prompt with previous summary")
+Provide the complete updated clinical summary with change tracking:"""
+            llm_logger.info("Using INCREMENTAL UPDATE WITH CHANGE TRACKING prompt")
         
         else:
             system_prompt = """You are a senior clinical assistant creating an initial current summary for a patient. 
@@ -631,7 +659,7 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_text}
+            {"role": "user", "content": full_prompt}
         ],
         "stream": False,
         "options": {
@@ -669,6 +697,16 @@ Focus on current conditions, recent interventions, and immediate care needs."""
             end_time = datetime.now()
             total_duration = (end_time - start_time).total_seconds()
             
+            # Log with OpenTelemetry
+            log_llm_request(
+                tracer=tracer,
+                model=model,
+                prompt=full_prompt,
+                response=response_content,
+                duration=total_duration,
+                status="success"
+            )
+            
             llm_logger.info(f"=== LLM CALL COMPLETED SUCCESSFULLY ===")
             llm_logger.info(f"Total duration: {total_duration:.2f} seconds")
             llm_logger.info(f"Response length: {len(response_content)} characters")
@@ -680,6 +718,18 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds()
         error_msg = f"Request error: Could not connect to Ollama. Make sure Ollama is running and the model is available. Details: {e}"
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model=model,
+            prompt=full_prompt,
+            response="",
+            duration=total_duration,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== LLM CALL FAILED (REQUEST ERROR) ===")
         llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
         llm_logger.error(f"Error: {error_msg}")
@@ -689,6 +739,18 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds()
         error_msg = f"HTTP error: {e.response.status_code} - {e.response.text}"
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model=model,
+            prompt=full_prompt,
+            response="",
+            duration=total_duration,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== LLM CALL FAILED (HTTP ERROR) ===")
         llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
         llm_logger.error(f"HTTP Status: {e.response.status_code}")
@@ -699,6 +761,18 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds()
         error_msg = f"Unexpected error: {str(e)}"
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model=model,
+            prompt=full_prompt,
+            response="",
+            duration=total_duration,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== LLM CALL FAILED (UNEXPECTED ERROR) ===")
         llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
         llm_logger.error(f"Error: {error_msg}")
@@ -715,9 +789,25 @@ async def call_gemini_pro(prompt_text: str, summary_type: str, previous_summary:
     llm_logger.info(f"Prompt Length: {len(prompt_text)} characters")
     llm_logger.info(f"Has Previous Summary: {previous_summary is not None}")
     
+    # Get tracer for OpenTelemetry
+    from opentelemetry import trace
+    tracer = trace.get_tracer(__name__)
+    
     GEMINI_API_KEY = os.getenv("GENERATESUMMARY_APIKEY")
     if not GEMINI_API_KEY:
         error_msg = "Gemini Pro API key not found. Please set GENERATESUMMARY_APIKEY environment variable."
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model="gemini-pro",
+            prompt=prompt_text,
+            response="",
+            duration=0.0,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== GEMINI PRO CALL FAILED ===")
         llm_logger.error(f"Error: {error_msg}")
         return error_msg
@@ -733,7 +823,7 @@ Use clear, professional medical language appropriate for clinical documentation.
         full_prompt = f"{system_prompt}\n\nPatient Data: {prompt_text}"
         llm_logger.info("Using HISTORICAL summary prompt")
         
-    else: # 'current' - sophisticated incremental update
+    else: # 'current' - sophisticated incremental update with change tracking
         if previous_summary:
             # Assess clinical significance of changes
             llm_logger.info("Assessing clinical significance for incremental update")
@@ -742,7 +832,7 @@ Use clear, professional medical language appropriate for clinical documentation.
             
             system_prompt = """You are a senior clinical assistant performing an incremental update to a patient summary. 
 
-CRITICAL INSTRUCTIONS:
+CRITICAL INSTRUCTIONS FOR INCREMENTAL UPDATES:
 1. PRESERVE CONTINUITY: Maintain all existing clinical assessments, recommendations, and care plans unless the new data provides clear evidence requiring changes.
 2. INCREMENTAL APPROACH: Only add new information or modify existing information when clinically significant changes are present.
 3. EVIDENCE-BASED CHANGES: Only alter previous recommendations if new data shows:
@@ -750,15 +840,25 @@ CRITICAL INSTRUCTIONS:
    - New diagnostic findings that change the clinical picture
    - Treatment responses that warrant care plan modifications
 4. MAINTAIN PROFESSIONAL TONE: Use consistent clinical language and formatting.
-5. HIGHLIGHT UPDATES: Clearly indicate what is new or changed while preserving the overall summary structure.
+5. CHANGE TRACKING: Use markdown formatting to clearly indicate changes:
+   - ~~deleted text~~ for content that should be removed (strikethrough)
+   - **new text** for content that should be added (bold)
+   - If no changes are needed, return the exact same summary
 
 PROCESS:
 - Review the previous summary thoroughly
 - Analyze new patient data for clinically significant changes
 - Consider the clinical significance assessment provided
 - Preserve all stable clinical information and ongoing care plans
-- Add new findings and updates where appropriate
-- Only modify recommendations when clinically justified by new evidence"""
+- Add new findings, observations, or changes in patient status
+- Only modify recommendations when clinically justified by new evidence
+- Use markdown formatting to show what should be deleted and what should be added
+
+OUTPUT FORMAT:
+Provide the complete updated clinical summary with markdown formatting:
+- Use ~~text~~ for content to be deleted
+- Use **text** for content to be added
+- If no changes needed, return the exact same summary without markdown"""
 
             full_prompt = f"""{system_prompt}
 
@@ -780,8 +880,8 @@ INSTRUCTIONS FOR UPDATE:
 7. Ensure the updated summary flows naturally and provides a complete current picture
 8. If modifications are made, ensure they are evidence-based and clinically appropriate
 
-Provide the complete updated clinical summary:"""
-            llm_logger.info("Using INCREMENTAL UPDATE prompt with previous summary")
+Provide the complete updated clinical summary with change tracking:"""
+            llm_logger.info("Using INCREMENTAL UPDATE WITH CHANGE TRACKING prompt")
         
         else:
             system_prompt = """You are a senior clinical assistant creating an initial current summary for a patient. 
@@ -842,6 +942,16 @@ Focus on current conditions, recent interventions, and immediate care needs."""
             end_time = datetime.now()
             total_duration = (end_time - start_time).total_seconds()
             
+            # Log with OpenTelemetry
+            log_llm_request(
+                tracer=tracer,
+                model="gemini-pro",
+                prompt=full_prompt,
+                response=response_content,
+                duration=total_duration,
+                status="success"
+            )
+            
             llm_logger.info(f"=== GEMINI PRO CALL COMPLETED SUCCESSFULLY ===")
             llm_logger.info(f"Total duration: {total_duration:.2f} seconds")
             llm_logger.info(f"Response length: {len(response_content)} characters")
@@ -853,6 +963,18 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds()
         error_msg = f"Request error: Could not connect to Gemini Pro API. Details: {e}"
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model="gemini-pro",
+            prompt=full_prompt,
+            response="",
+            duration=total_duration,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== GEMINI PRO CALL FAILED (REQUEST ERROR) ===")
         llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
         llm_logger.error(f"Error: {error_msg}")
@@ -862,6 +984,18 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds()
         error_msg = f"HTTP error: {e.response.status_code} - {e.response.text}"
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model="gemini-pro",
+            prompt=full_prompt,
+            response="",
+            duration=total_duration,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== GEMINI PRO CALL FAILED (HTTP ERROR) ===")
         llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
         llm_logger.error(f"HTTP Status: {e.response.status_code}")
@@ -872,6 +1006,18 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         end_time = datetime.now()
         total_duration = (end_time - start_time).total_seconds()
         error_msg = f"Unexpected error: {str(e)}"
+        
+        # Log error with OpenTelemetry
+        log_llm_request(
+            tracer=tracer,
+            model="gemini-pro",
+            prompt=full_prompt,
+            response="",
+            duration=total_duration,
+            status="error",
+            error=error_msg
+        )
+        
         llm_logger.error(f"=== GEMINI PRO CALL FAILED (UNEXPECTED ERROR) ===")
         llm_logger.error(f"Total duration: {total_duration:.2f} seconds")
         llm_logger.error(f"Error: {error_msg}")
@@ -895,6 +1041,68 @@ async def call_llm(prompt_text: str, summary_type: str, previous_summary: str = 
         return await call_gemini_pro(prompt_text, summary_type, previous_summary)
     else:  # ollama
         return await call_ollama_llm(prompt_text, summary_type, previous_summary, model)
+
+
+def process_llm_response_with_changes(llm_response: str, previous_summary: str = None) -> dict:
+    """
+    Process LLM response that contains markdown change tracking and extract:
+    - Clean summary (without markdown)
+    - Deletions (content marked with ~~text~~)
+    - Additions (content marked with **text**)
+    - Change tracking information
+    
+    Args:
+        llm_response: Raw LLM response with markdown change tracking
+        previous_summary: Previous summary for comparison
+        
+    Returns:
+        dict with clean_summary, deletions, additions, and change_info
+    """
+    import re
+    
+    # Extract deletions (~~text~~)
+    deletions = re.findall(r'~~(.*?)~~', llm_response, re.DOTALL)
+    
+    # Extract additions (**text**)
+    additions = re.findall(r'\*\*(.*?)\*\*', llm_response, re.DOTALL)
+    
+    # Create clean summary by removing markdown
+    clean_summary = llm_response
+    clean_summary = re.sub(r'~~(.*?)~~', r'\1', clean_summary)  # Remove strikethrough, keep content
+    clean_summary = re.sub(r'\*\*(.*?)\*\*', r'\1', clean_summary)  # Remove bold, keep content
+    
+    # Determine if there were actual changes
+    has_changes = len(deletions) > 0 or len(additions) > 0
+    
+    # If no markdown changes found, check if response is identical to previous
+    if not has_changes and previous_summary:
+        # Normalize whitespace for comparison
+        normalized_response = re.sub(r'\s+', ' ', clean_summary.strip())
+        normalized_previous = re.sub(r'\s+', ' ', previous_summary.strip())
+        has_changes = normalized_response != normalized_previous
+    
+    # Create change tracking information
+    change_info = {
+        "has_changes": has_changes,
+        "deletion_count": len(deletions),
+        "addition_count": len(additions),
+        "deletions": deletions,
+        "additions": additions
+    }
+    
+    # Create highlighted HTML for display
+    highlighted_html = clean_summary
+    for deletion in deletions:
+        highlighted_html = highlighted_html.replace(deletion, f'<span class="highlight-deleted" style="text-decoration: line-through; color: #999;">{deletion}</span>')
+    for addition in additions:
+        highlighted_html = highlighted_html.replace(addition, f'<span class="highlight-added" style="font-weight: bold; color: #28a745;">{addition}</span>')
+    
+    return {
+        "clean_summary": clean_summary,
+        "highlighted_html": highlighted_html,
+        "change_info": change_info,
+        "raw_response": llm_response
+    }
 
 
 def highlight_changes(old_text: str, new_text: str) -> str:
@@ -979,8 +1187,13 @@ async def summarize_patient_data(patient_id: int, request: Request):
     For 'current' type, this creates an incremental update based on previous summary.
     Does NOT save the summary.
     """
+    start_time = time.time()
     logger.info(f"=== SUMMARIZE REQUEST STARTED ===")
     logger.info(f"Patient ID: {patient_id}")
+    
+    # Get tracer for OpenTelemetry
+    from opentelemetry import trace
+    tracer = trace.get_tracer(__name__)
     
     body = await request.json()
     summary_type = body.get("summary_type", "historical") # 'historical' or 'current'
@@ -988,56 +1201,128 @@ async def summarize_patient_data(patient_id: int, request: Request):
     logger.info(f"Summary Type: {summary_type}")
     logger.info(f"Selected Model: {model}")
 
-    async with async_session() as session:
-        patient = await session.get(Patient, patient_id)
-        if not patient:
-            logger.error(f"Patient {patient_id} not found")
-            raise HTTPException(status_code=404, detail="Patient not found")
-        
-        logger.info(f"Patient found: {patient.synthea_id}")
-        
-        # Get previous summary for incremental updates (current type only)
-        previous_summary = None
-        if summary_type == 'current':
-            logger.info("Fetching previous summary for incremental update")
-            result = await session.execute(
-                select(PatientSummary)
-                .where(PatientSummary.patient_id == patient_id)
-                .where(PatientSummary.summary_type == summary_type)
-                .where(PatientSummary.is_active == True)
-            )
-            previous = result.scalar_one_or_none()
-            if previous:
-                previous_summary = previous.content
-                logger.info(f"Previous summary found, version: {previous.version}")
-            else:
-                logger.info("No previous summary found, will create initial current summary")
-        
-        if summary_type == 'current':
-            stats = get_fhir_stats(patient.data, last_n=10)
-            logger.info(f"Generated current stats (last 10 events), length: {len(stats)} characters")
-        else:
-            stats = get_fhir_stats(patient.data)
-            logger.info(f"Generated historical stats, length: {len(stats)} characters")
+    try:
+        async with async_session() as session:
+            patient = await session.get(Patient, patient_id)
+            if not patient:
+                logger.error(f"Patient {patient_id} not found")
+                raise HTTPException(status_code=404, detail="Patient not found")
             
-        logger.info(f"Initiating LLM call for summary generation with model: {model}")
-        summary_text = await call_llm(stats, summary_type, previous_summary, model)
+            logger.info(f"Patient found: {patient.synthea_id}")
+            
+            # Get previous summary for incremental updates (current type only)
+            previous_summary = None
+            if summary_type == 'current':
+                logger.info("Fetching previous summary for incremental update")
+                result = await session.execute(
+                    select(PatientSummary)
+                    .where(PatientSummary.patient_id == patient_id)
+                    .where(PatientSummary.summary_type == summary_type)
+                    .where(PatientSummary.is_active == True)
+                )
+                previous = result.scalar_one_or_none()
+                if previous:
+                    previous_summary = previous.content
+                    logger.info(f"Previous summary found, version: {previous.version}")
+                else:
+                    logger.info("No previous summary found, will create initial current summary")
+            
+            if summary_type == 'current':
+                stats = get_fhir_stats(patient.data, last_n=10)
+                logger.info(f"Generated current stats (last 10 events), length: {len(stats)} characters")
+            else:
+                stats = get_fhir_stats(patient.data)
+                logger.info(f"Generated historical stats, length: {len(stats)} characters")
+                
+            logger.info(f"Initiating LLM call for summary generation with model: {model}")
+            summary_text = await call_llm(stats, summary_type, previous_summary, model)
+            
+            # Process the LLM response for change tracking
+            processed_response = None
+            if summary_type == 'current' and previous_summary:
+                logger.info("Processing LLM response for change tracking")
+                processed_response = process_llm_response_with_changes(summary_text, previous_summary)
+                
+                # Use the clean summary for saving
+                summary_text = processed_response["clean_summary"]
+                highlighted_html = processed_response["highlighted_html"]
+                
+                logger.info(f"Change tracking: {processed_response['change_info']['deletion_count']} deletions, {processed_response['change_info']['addition_count']} additions")
+            else:
+                # For historical summaries or initial current summaries, use simple highlighting
+                highlighted_html = None
+                if summary_type == 'current':
+                    logger.info("Generating highlighted HTML for current summary")
+                    highlighted_html = highlight_changes(previous_summary or "", summary_text)
+            
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            # Log with OpenTelemetry
+            log_api_request(
+                tracer=tracer,
+                method="POST",
+                path=f"/patients/{patient_id}/summarize",
+                status_code=200,
+                duration=duration,
+                request_body={"summary_type": summary_type, "model": model},
+                response_body={"summary_length": len(summary_text), "model_used": model}
+            )
+            
+            logger.info(f"=== SUMMARIZE REQUEST COMPLETED ===")
+            logger.info(f"Generated summary length: {len(summary_text)} characters")
+            logger.info(f"Total duration: {duration:.3f} seconds")
+            
+            response_data = {
+                "summary": summary_text,
+                "highlighted_html": highlighted_html,
+                "has_previous": previous_summary is not None,
+                "model_used": model
+            }
+            
+            # Add change tracking information if available
+            if processed_response:
+                response_data["change_info"] = processed_response["change_info"]
+                response_data["raw_llm_response"] = processed_response["raw_response"]
+            
+            return response_data
+            
+    except HTTPException:
+        end_time = time.time()
+        duration = end_time - start_time
         
-        # Generate highlighted version for current summaries
-        highlighted_html = None
-        if summary_type == 'current':
-            logger.info("Generating highlighted HTML for current summary")
-            highlighted_html = highlight_changes(previous_summary or "", summary_text)
+        # Log error with OpenTelemetry
+        log_api_request(
+            tracer=tracer,
+            method="POST",
+            path=f"/patients/{patient_id}/summarize",
+            status_code=404,
+            duration=duration,
+            request_body={"summary_type": summary_type, "model": model},
+            response_body={"error": "Patient not found"}
+        )
+        raise
         
-        logger.info(f"=== SUMMARIZE REQUEST COMPLETED ===")
-        logger.info(f"Generated summary length: {len(summary_text)} characters")
+    except Exception as e:
+        end_time = time.time()
+        duration = end_time - start_time
+        error_msg = f"Unexpected error: {str(e)}"
         
-        return {
-            "summary": summary_text,
-            "highlighted_html": highlighted_html,
-            "has_previous": previous_summary is not None,
-            "model_used": model
-        }
+        # Log error with OpenTelemetry
+        log_api_request(
+            tracer=tracer,
+            method="POST",
+            path=f"/patients/{patient_id}/summarize",
+            status_code=500,
+            duration=duration,
+            request_body={"summary_type": summary_type, "model": model},
+            response_body={"error": error_msg}
+        )
+        
+        logger.error(f"=== SUMMARIZE REQUEST FAILED ===")
+        logger.error(f"Error: {error_msg}")
+        logger.error(f"Duration: {duration:.3f} seconds")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/patients/{patient_id}/summary/{summary_type}/history")
 async def get_summary_history(patient_id: int, summary_type: str):
@@ -1338,8 +1623,23 @@ async def upload_fax(file: UploadFile = File(...)):
 # --- DB Init Utility ---
 @app.on_event("startup")
 async def on_startup():
+    # Set up OpenTelemetry
+    logger.info("Setting up OpenTelemetry...")
+    tracer = setup_telemetry()
+    
+    # Instrument all components
+    instrument_fastapi(app)
+    instrument_httpx()
+    instrument_sqlalchemy()
+    instrument_logging()
+    
+    logger.info("OpenTelemetry instrumentation completed")
+    
+    # Initialize database
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    logger.info("EHR Simulator startup completed")
 
 def assess_clinical_significance(previous_summary: str, new_data: str) -> str:
     """

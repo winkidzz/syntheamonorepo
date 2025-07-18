@@ -6,4 +6,11 @@ langchain
 httpx
 python-dotenv
 sse-starlette
-psycopg2-binary 
+psycopg2-binary
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+opentelemetry-instrumentation-sqlalchemy
+opentelemetry-instrumentation-logging
+opentelemetry-exporter-otlp-proto-http 
