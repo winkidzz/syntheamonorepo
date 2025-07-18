@@ -198,10 +198,64 @@ async def simulate_patient_update_async(patient_id: int):
 
 # --- Synthea API Call Stub ---
 async def fetch_synthea_patient():
-    # TODO: Call the Synthea Spring Boot service to generate a patient
-    async with httpx.AsyncClient() as client:
-        resp = await client.get("http://localhost:8081/generate-patient")
-        return resp.json()
+    """
+    Call the Synthea Spring Boot service to generate a patient.
+    Falls back to mock data if the service is unavailable.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:  # Reduced timeout
+            resp = await client.get("http://localhost:8081/generate-patient")
+            resp.raise_for_status()
+            return resp.json()
+    except (httpx.RequestError, httpx.HTTPStatusError, httpx.ReadTimeout) as e:
+        logger.warning(f"Synthea service unavailable: {e}. Using mock patient data.")
+        
+        # Return mock FHIR bundle for testing
+        import uuid
+        patient_id = str(uuid.uuid4())
+        return {
+            "resourceType": "Bundle",
+            "type": "collection",
+            "id": patient_id,
+            "entry": [
+                {
+                    "resource": {
+                        "resourceType": "Patient",
+                        "id": patient_id,
+                        "name": [{"given": ["John"], "family": "Doe"}],
+                        "gender": "male",
+                        "birthDate": "1980-01-01",
+                        "address": [{"text": "123 Main St, Anytown, USA"}]
+                    }
+                },
+                {
+                    "resource": {
+                        "resourceType": "Observation",
+                        "category": [{"coding": [{"code": "vital-signs"}]}],
+                        "valueQuantity": {
+                            "heart_rate": 72,
+                            "blood_pressure": "120/80",
+                            "temperature": 37.0,
+                            "respiratory_rate": 16
+                        }
+                    }
+                },
+                {
+                    "resource": {
+                        "resourceType": "Condition",
+                        "code": {"text": "Hypertension"},
+                        "status": "active"
+                    }
+                },
+                {
+                    "resource": {
+                        "resourceType": "MedicationStatement",
+                        "medicationCodeableConcept": {"text": "Lisinopril 10mg daily"},
+                        "status": "active"
+                    }
+                }
+            ]
+        }
 
 # --- Workflow Engine ---
 class WorkflowType(str, Enum):
@@ -1445,23 +1499,44 @@ async def save_patient_summary(patient_id: int, request: Request):
 async def admit_patient():
     """
     Admit a new patient by calling Synthea's /generate-patient, saving to Postgres, and returning the new patient ID.
+    Falls back to mock data if Synthea service is unavailable.
     """
-    synthea_data = await fetch_synthea_patient()
-    # Extract the Patient resource's id from the FHIR bundle
-    synthea_id = None
-    for entry in synthea_data.get("entry", []):
-        resource = entry.get("resource", {})
-        if resource.get("resourceType") == "Patient":
-            synthea_id = resource.get("id")
-            break
-    if not synthea_id:
-        synthea_id = synthea_data.get("id", "synthea")
-    async with async_session() as session:
-        patient = Patient(synthea_id=synthea_id, data=synthea_data)
-        session.add(patient)
-        await session.commit()
-        await session.refresh(patient)
-    return {"id": patient.id, "synthea_id": patient.synthea_id}
+    try:
+        logger.info("=== ADMIT PATIENT REQUEST STARTED ===")
+        
+        # Fetch patient data (with fallback to mock data)
+        synthea_data = await fetch_synthea_patient()
+        
+        # Extract the Patient resource's id from the FHIR bundle
+        synthea_id = None
+        for entry in synthea_data.get("entry", []):
+            resource = entry.get("resource", {})
+            if resource.get("resourceType") == "Patient":
+                synthea_id = resource.get("id")
+                break
+        
+        if not synthea_id:
+            synthea_id = synthea_data.get("id", "synthea")
+        
+        logger.info(f"Patient data fetched, synthea_id: {synthea_id}")
+        
+        # Save to database
+        async with async_session() as session:
+            patient = Patient(synthea_id=synthea_id, data=synthea_data)
+            session.add(patient)
+            await session.commit()
+            await session.refresh(patient)
+        
+        logger.info(f"=== ADMIT PATIENT REQUEST COMPLETED ===")
+        logger.info(f"New patient created with ID: {patient.id}")
+        
+        return {"id": patient.id, "synthea_id": patient.synthea_id}
+        
+    except Exception as e:
+        error_msg = f"Failed to admit patient: {str(e)}"
+        logger.error(f"=== ADMIT PATIENT REQUEST FAILED ===")
+        logger.error(f"Error: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/patients", response_model=List[dict])
 async def get_patients():
