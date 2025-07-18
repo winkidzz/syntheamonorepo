@@ -195,7 +195,6 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                     <TextField
                         multiline
                         fullWidth
-                        rows={20}
                         variant="outlined"
                         value={content}
                         onChange={e => setContent(e.target.value)}
@@ -203,7 +202,7 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                         helperText="You can use markdown formatting (headers, lists, tables, etc.)"
                         sx={{
                             '& .MuiOutlinedInput-root': {
-                                minHeight: '500px',
+                                minHeight: '600px',
                                 alignItems: 'flex-start'
                             },
                             '& .MuiOutlinedInput-input': {
@@ -220,7 +219,7 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                         variant="outlined" 
                         sx={{ 
                             p: 3, 
-                            minHeight: '500px',
+                            minHeight: '600px',
                             maxHeight: '80vh',
                             overflow: 'auto',
                             backgroundColor: '#fafafa',
@@ -235,25 +234,24 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                 )}
                 
                 {editViewMode === 2 && (
-                    // Split View - Use full width with better proportions
+                    // Split View - Use full width with proper 50/50 proportions
                     <Box sx={{ width: '100%' }}>
-                        <Grid container spacing={3} sx={{ width: '100%' }}>
-                            <Grid item xs={12} md={6} sx={{ minWidth: 0 }}>
+                        <Grid container spacing={2} sx={{ width: '100%', height: '600px' }}>
+                            <Grid item xs={12} md={6} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                                 <Typography variant="caption" color="textSecondary" sx={{ mb: 1, display: 'block' }}>
                                     Edit:
                                 </Typography>
                                 <TextField
                                     multiline
                                     fullWidth
-                                    rows={18}
                                     variant="outlined"
                                     value={content}
                                     onChange={e => setContent(e.target.value)}
                                     placeholder="Enter markdown content here..."
                                     sx={{
-                                        width: '100%',
+                                        flex: 1,
                                         '& .MuiOutlinedInput-root': {
-                                            height: '500px',
+                                            height: '100%',
                                             alignItems: 'flex-start'
                                         },
                                         '& .MuiOutlinedInput-input': {
@@ -263,18 +261,18 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                                     }}
                                 />
                             </Grid>
-                            <Grid item xs={12} md={6} sx={{ minWidth: 0 }}>
+                            <Grid item xs={12} md={6} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                                 <Typography variant="caption" color="textSecondary" sx={{ mb: 1, display: 'block' }}>
                                     Preview:
                                 </Typography>
                                 <Paper 
                                     variant="outlined" 
                                     sx={{ 
+                                        flex: 1,
                                         p: 2, 
-                                        height: '500px',
                                         overflow: 'auto',
                                         backgroundColor: '#fafafa',
-                                        width: '100%'
+                                        height: '100%'
                                     }}
                                 >
                                     <MarkdownRenderer>{content || 'Enter content to see preview...'}</MarkdownRenderer>
