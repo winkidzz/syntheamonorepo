@@ -239,51 +239,74 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
                 )}
                 
                 {editViewMode === 2 && (
-                    // Split View - Use full width with proper 50/50 proportions
-                    <Box sx={{ width: '100%' }}>
-                        <Grid container spacing={2} sx={{ width: '100%', height: '600px' }}>
-                            <Grid item xs={12} md={6} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                <Typography variant="caption" color="textSecondary" sx={{ mb: 1, display: 'block' }}>
-                                    Edit:
-                                </Typography>
-                                <TextField
-                                    multiline
-                                    fullWidth
-                                    variant="outlined"
-                                    value={content}
-                                    onChange={e => setContent(e.target.value)}
-                                    placeholder="Enter markdown content here..."
-                                    sx={{
-                                        flex: 1,
-                                        '& .MuiOutlinedInput-root': {
-                                            height: '100%',
-                                            alignItems: 'flex-start'
-                                        },
-                                        '& .MuiOutlinedInput-input': {
-                                            height: '100% !important',
-                                            overflow: 'auto !important'
-                                        }
-                                    }}
-                                />
-                            </Grid>
-                            <Grid item xs={12} md={6} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                <Typography variant="caption" color="textSecondary" sx={{ mb: 1, display: 'block' }}>
-                                    Preview:
-                                </Typography>
-                                <Paper 
-                                    variant="outlined" 
-                                    sx={{ 
-                                        flex: 1,
-                                        p: 2, 
-                                        overflow: 'auto',
-                                        backgroundColor: '#fafafa',
-                                        height: '100%'
-                                    }}
-                                >
+                    // Split View - Use flexbox for more reliable layout
+                    <Box sx={{ 
+                        width: '100%', 
+                        height: { xs: 'auto', md: '600px' },
+                        display: 'flex',
+                        flexDirection: { xs: 'column', md: 'row' },
+                        gap: 2,
+                        position: 'relative'
+                    }}>
+                        {/* Edit Section */}
+                        <Box sx={{ 
+                            flex: 1,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            minWidth: 0,
+                            minHeight: { xs: '300px', md: 'auto' }
+                        }}>
+                            <Typography variant="caption" color="textSecondary" sx={{ mb: 1, display: 'block' }}>
+                                Edit:
+                            </Typography>
+                            <TextField
+                                multiline
+                                fullWidth
+                                variant="outlined"
+                                value={content}
+                                onChange={e => setContent(e.target.value)}
+                                placeholder="Enter markdown content here..."
+                                sx={{
+                                    flex: 1,
+                                    '& .MuiOutlinedInput-root': {
+                                        height: '100%',
+                                        alignItems: 'flex-start'
+                                    },
+                                    '& .MuiOutlinedInput-input': {
+                                        height: '100% !important',
+                                        overflow: 'auto !important'
+                                    }
+                                }}
+                            />
+                        </Box>
+                        
+                        {/* Preview Section */}
+                        <Box sx={{ 
+                            flex: 1,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            minWidth: 0,
+                            minHeight: { xs: '300px', md: 'auto' }
+                        }}>
+                            <Typography variant="caption" color="textSecondary" sx={{ mb: 1, display: 'block' }}>
+                                Preview:
+                            </Typography>
+                            <Paper 
+                                variant="outlined" 
+                                sx={{ 
+                                    flex: 1,
+                                    p: 2, 
+                                    overflow: 'auto',
+                                    backgroundColor: '#fafafa',
+                                    display: 'flex',
+                                    flexDirection: 'column'
+                                }}
+                            >
+                                <Box sx={{ flex: 1, overflow: 'auto' }}>
                                     <MarkdownRenderer>{content || 'Enter content to see preview...'}</MarkdownRenderer>
-                                </Paper>
-                            </Grid>
-                        </Grid>
+                                </Box>
+                            </Paper>
+                        </Box>
                     </Box>
                 )}
             </Box>
