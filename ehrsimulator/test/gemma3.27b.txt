@@ -1,0 +1,41 @@
+Parsed Fax Details:
+
+Here's a breakdown of the information from the provided document:
+
+**Overall Report:**
+
+*   **Lab:** Integrated Genetics
+*   **Test:** Chromosome Amnio RFX CMA
+*   **Specimen Type:** Amniotic Fluid
+
+**Patient Information:**
+
+*   **Patient Name:** Sample Report, 052104
+*   **Date of Birth:** 06/12/1985
+*   **Gender:** F (Female)
+*   **Patient ID:** YU16-73624 A
+
+**Results:**
+
+*   **Cells Counted:** 15
+*   **Colonies Counted:** 15
+*   **Cells Analyzed:** 15
+*   **Cytogenic Result:** 46,XX (Normal Female Karyotype)
+*   **Cells Karytyped:** 2
+*   **Band Resolution:** 450
+
+**Interpretation & Disclaimer:**
+
+*   “Cytogenetic analysis of cultured amniocytes has revealed a NORMAL female karyotype with an apparently normal GTG banding pattern in all in-situ colonies or subcultured metaphases analyzed.”
+*   “This result does not exclude the possibility of subtle rearrangements below the resolution of cytogenetics or congenital anomalies.”
+
+**Personnel:**
+
+*   **Under K. Gadi, PhD, FACMG** (Board Certified Cytogeneticist)
+*   **Arunidhati Chatterjee, MD** (Medical Director)
+*   **Peter Papenhause, PhD** (National Director of Cytogenetics)
+
+**Address:**
+1904 TW Alexander Drive, RTP, NC, 27709-0183 (800) 345-4363
+
+**Note:** This is a standard cytogenetic report. The 46,XX result indicates that the patient has two normal X chromosomes, which is typical. The disclaimer highlights that even with this seemingly normal result, other chromosomal or genetic abnormalities could still be present that wouldn't be detected by this specific test.

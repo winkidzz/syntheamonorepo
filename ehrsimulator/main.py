@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Request, Response, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Request, Response, BackgroundTasks, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -15,6 +15,13 @@ import json
 from enum import Enum
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, update
+import base64
+import aiofiles
+import tempfile
+from PIL import Image
+import io
+import requests
+import logging
 
 # --- Configuration ---
 # LLM Configuration for reproducible and accurate clinical summaries
@@ -498,11 +505,11 @@ def get_fhir_stats(fhir_bundle: dict, last_n: Optional[int] = None) -> str:
 
 async def call_ollama_llm(prompt_text: str, summary_type: str, previous_summary: str = None) -> str:
     """
-    Calls a local Ollama LLM to generate a summary with temperature=0 for reproducibility.
+    Calls a remote Ollama LLM to generate a summary with temperature=0 for reproducibility.
     For current summaries, performs sophisticated incremental updates that preserve
     previous recommendations unless new data requires major reevaluation.
     """
-    OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+    OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
     
     if summary_type == 'historical':
         system_prompt = """You are a senior clinical assistant with extensive experience in patient care documentation. 
@@ -567,8 +574,11 @@ Focus on current conditions, recent interventions, and immediate care needs."""
             full_prompt = f"{system_prompt}\n\nRecent Patient Data: {prompt_text}"
 
     payload = {
-        "model": "llama3:8b",
-        "prompt": full_prompt,
+        "model": "gemma3:27b",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_text}
+        ],
         "stream": False,
         "options": {
             "temperature": LLM_CONFIG["temperature"],
@@ -582,7 +592,8 @@ Focus on current conditions, recent interventions, and immediate care needs."""
         async with httpx.AsyncClient(timeout=LLM_CONFIG["timeout"]) as client:
             response = await client.post(OLLAMA_URL, json=payload)
             response.raise_for_status()
-            return response.json().get("response", "Error: No response from model.")
+            result = response.json()
+            return result.get("choices", [{}])[0].get("message", {}).get("content", "Error: No response from model.")
     except (httpx.RequestError, httpx.HTTPStatusError) as e:
         return f"Error: Could not connect to Ollama. Make sure Ollama is running and the model is available. Details: {e}"
 
@@ -807,6 +818,95 @@ async def get_patient(patient_id: int):
         if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
         return {"id": patient.id, "synthea_id": patient.synthea_id, "data": patient.data}
+
+@app.post("/patients/{patient_id}/fax-upload")
+async def upload_fax_tiff(patient_id: int, file: UploadFile = File(...)):
+    """
+    Accepts a TIFF file upload, sends it to Gemma 3 4B for parsing, and returns the result.
+    """
+    # Save uploaded file to a temp location
+    suffix = ".tiff" if file.filename.lower().endswith(".tiff") else ".tif"
+    async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read()
+        await tmp.write(content)
+        tmp_path = tmp.name
+
+    # Encode file as base64 data URL
+    encoded_string = base64.b64encode(content).decode("utf-8")
+    data_url = f"data:image/tiff;base64,{encoded_string}"
+
+    # Prepare payload for Ollama OpenAI-compatible endpoint
+    payload = {
+        "model": "gemma3:27b",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Parse this fax and summarize the key clinical information."},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]
+            }
+        ]
+    }
+    # Send to Ollama (OpenAI-compatible endpoint)
+    OLLAMA_OPENAI_URL = os.getenv("OLLAMA_OPENAI_URL", "http://localhost:11434/v1/chat/completions")
+    try:
+        async with httpx.AsyncClient(timeout=LLM_CONFIG["timeout"]) as client:
+            response = await client.post(OLLAMA_OPENAI_URL, json=payload)
+            response.raise_for_status()
+            return response.json()
+    except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        return {"error": f"Could not connect to Ollama or model error: {e}"}
+
+@app.post("/upload-fax/")
+async def upload_fax(file: UploadFile = File(...)):
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("fax-upload")
+    logger.info(f"Received file: {file.filename}, content_type: {file.content_type}")
+    # Check file type
+    if not file.filename.lower().endswith((".tif", ".tiff")):
+        logger.error("File is not a TIFF.")
+        raise HTTPException(status_code=400, detail="Only TIFF files are supported.")
+
+    # Read TIFF file
+    tiff_bytes = await file.read()
+    try:
+        logger.info("Attempting to open TIFF image.")
+        tiff_image = Image.open(io.BytesIO(tiff_bytes))
+        png_buffer = io.BytesIO()
+        tiff_image.save(png_buffer, format="PNG")
+        png_bytes = png_buffer.getvalue()
+        logger.info(f"TIFF to PNG conversion successful. PNG size: {len(png_bytes)} bytes.")
+    except Exception as e:
+        logger.error(f"Image conversion failed: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": f"Image conversion failed: {str(e)}"})
+
+    # Encode PNG as base64 for LLM API
+    png_b64 = base64.b64encode(png_bytes).decode("utf-8")
+
+    # Prepare payload for llava-llama3
+    payload = {
+        "model": "llava:latest",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": f"data:image/png;base64,{png_b64}"}
+            ]}
+        ]
+    }
+    logger.info(f"Payload to be sent to Ollama: {payload}")
+    # Call Ollama API
+    try:
+        logger.info("Sending PNG to Ollama LLM API.")
+        response = requests.post("http://localhost:11434/v1/chat/completions", json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        logger.info(f"Ollama API response: {result}")
+        details = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+    except Exception as e:
+        logger.error(f"LLM API call failed: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": f"LLM API call failed: {str(e)}"})
+
+    return JSONResponse(content={"details": details})
 
 # --- DB Init Utility ---
 @app.on_event("startup")

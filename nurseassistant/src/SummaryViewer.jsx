@@ -29,27 +29,29 @@ export function SummaryViewer({ patientId }) {
     }
 
     return (
-        <Grid container spacing={3}>
-            <Grid item xs={12}>
-                <SummarySection 
-                    title="Historical Summary"
-                    patientId={patientId}
-                    summaryType="historical"
-                    initialContent={summaries.historical?.content || null}
-                    onSave={fetchSummaries}
-                />
+        <Box sx={{ width: '100%' }}>
+            <Grid container spacing={3} sx={{ width: '100%' }}>
+                <Grid item xs={12} sx={{ width: '100%' }}>
+                    <SummarySection 
+                        title="Historical Summary"
+                        patientId={patientId}
+                        summaryType="historical"
+                        initialContent={summaries.historical?.content || null}
+                        onSave={fetchSummaries}
+                    />
+                </Grid>
+                <Grid item xs={12} sx={{ width: '100%' }}>
+                    <SummarySection 
+                        title="Current Summary"
+                        patientId={patientId}
+                        summaryType="current"
+                        initialContent={summaries.current?.content || null}
+                        initialHighlighted={summaries.current?.highlighted_html || null}
+                        onSave={fetchSummaries}
+                        promptHelpText="Incremental summary - updates are highlighted when generated."
+                    />
+                </Grid>
             </Grid>
-            <Grid item xs={12}>
-                <SummarySection 
-                    title="Current Summary"
-                    patientId={patientId}
-                    summaryType="current"
-                    initialContent={summaries.current?.content || null}
-                    initialHighlighted={summaries.current?.highlighted_html || null}
-                    onSave={fetchSummaries}
-                    promptHelpText="Incremental summary - updates are highlighted when generated."
-                />
-            </Grid>
-        </Grid>
+        </Box>
     );
 } 

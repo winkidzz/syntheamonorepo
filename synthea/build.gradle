@@ -140,6 +140,7 @@ dependencies {
   testImplementation 'org.springframework.boot:spring-boot-starter-test:3.2.6'
 
   developmentOnly 'org.springframework.boot:spring-boot-devtools:3.2.6'
+  implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.5.0'
 }
 
 // Provide more descriptive test failure output

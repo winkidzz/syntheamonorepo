@@ -236,7 +236,7 @@ def highlight_changes(old_text: str, new_text: str) -> str:
 - Python 3.9+ with virtual environment
 - Node.js 16+ and npm
 - Java 11+ (for Synthea)
-- Ollama with llama3:8b model
+- e with llama3:8b model
 
 ### Setup Steps
 
