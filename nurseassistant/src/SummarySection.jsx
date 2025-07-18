@@ -161,11 +161,16 @@ export function SummarySection({ title, patientId, summaryType, initialContent, 
             content,
             highlighted_html: highlightedHtml
         };
+        
         axios.post(`${API_BASE}/patients/${patientId}/summary`, saveData)
-            .then(() => {
+            .then((response) => {
                 if (onSave) onSave(); // Refresh summaries
                 setIsEditing(false);
                 setShowHighlighted(false);
+            })
+            .catch((error) => {
+                console.error('Save failed:', error);
+                alert(`Save failed: ${error.response?.data?.detail || error.message}`);
             })
             .finally(() => setIsSaving(false));
     };

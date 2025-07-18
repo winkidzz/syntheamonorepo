@@ -1088,60 +1088,72 @@ async def save_patient_summary(patient_id: int, request: Request):
     logger.info(f"=== SAVE SUMMARY REQUEST STARTED ===")
     logger.info(f"Patient ID: {patient_id}")
     
-    body = await request.json()
-    summary_type = body.get("type")
-    content = body.get("content", "")
-    highlighted_html = body.get("highlighted_html")
-    
-    logger.info(f"Summary Type: {summary_type}")
-    logger.info(f"Content Length: {len(content)} characters")
-    logger.info(f"Has Highlighted HTML: {highlighted_html is not None}")
-    
-    if not content.strip():
-        logger.error("Empty content provided for summary")
-        raise HTTPException(status_code=400, detail="Summary content cannot be empty")
+    try:
+        body = await request.json()
+        summary_type = body.get("type")
+        content = body.get("content", "")
+        highlighted_html = body.get("highlighted_html")
+        
+        logger.info(f"Summary Type: {summary_type}")
+        logger.info(f"Content Length: {len(content)} characters")
+        logger.info(f"Has Highlighted HTML: {highlighted_html is not None}")
+        
+        if not content.strip():
+            logger.error("Empty content provided for summary")
+            raise HTTPException(status_code=400, detail="Summary content cannot be empty")
 
-    async with async_session() as session:
-        # Get the latest version for this patient and summary type
-        result = await session.execute(
-            select(PatientSummary)
-            .where(PatientSummary.patient_id == patient_id)
-            .where(PatientSummary.summary_type == summary_type)
-            .order_by(PatientSummary.version.desc())
-        )
-        latest = result.scalar_one_or_none()
-        
-        new_version = 1 if not latest else latest.version + 1
-        logger.info(f"Creating new version: {new_version}")
-        
-        # Deactivate previous active summary
-        if latest and latest.is_active:
-            logger.info("Deactivating previous active summary")
-            latest.is_active = False
-            session.add(latest)
-        
-        # Create new summary
-        new_summary = PatientSummary(
-            patient_id=patient_id,
-            summary_type=summary_type,
-            content=content,
-            version=new_version,
-            is_active=True,
-            changes_highlighted=highlighted_html
-        )
-        
-        session.add(new_summary)
-        await session.commit()
-        await session.refresh(new_summary)
-        
-        logger.info(f"=== SAVE SUMMARY REQUEST COMPLETED ===")
-        logger.info(f"Summary saved with ID: {new_summary.id}, Version: {new_summary.version}")
-        
-        return {
-            "id": new_summary.id,
-            "version": new_summary.version,
-            "created_at": new_summary.created_at
-        }
+        async with async_session() as session:
+            try:
+                # Get the latest version for this patient and summary type
+                result = await session.execute(
+                    select(PatientSummary)
+                    .where(PatientSummary.patient_id == patient_id)
+                    .where(PatientSummary.summary_type == summary_type)
+                    .order_by(PatientSummary.version.desc())
+                )
+                latest = result.scalars().first()
+                
+                new_version = 1 if not latest else latest.version + 1
+                logger.info(f"Creating new version: {new_version}")
+                
+                # Deactivate previous active summary
+                if latest and latest.is_active:
+                    logger.info("Deactivating previous active summary")
+                    latest.is_active = False
+                    session.add(latest)
+                
+                # Create new summary
+                new_summary = PatientSummary(
+                    patient_id=patient_id,
+                    summary_type=summary_type,
+                    content=content,
+                    version=new_version,
+                    is_active=True,
+                    changes_highlighted=highlighted_html
+                )
+                
+                session.add(new_summary)
+                await session.commit()
+                await session.refresh(new_summary)
+                
+                logger.info(f"=== SAVE SUMMARY REQUEST COMPLETED ===")
+                logger.info(f"Summary saved with ID: {new_summary.id}, Version: {new_summary.version}")
+                
+                return {
+                    "id": new_summary.id,
+                    "version": new_summary.version,
+                    "created_at": new_summary.created_at
+                }
+            except Exception as e:
+                logger.error(f"Database error during save: {str(e)}")
+                await session.rollback()
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in save_patient_summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 # --- REST Endpoint: Create/Simulate Patient ---
 @app.post("/admit-patient")
